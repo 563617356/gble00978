@@ -1,87 +1,66 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LBS GPS 智能激活工具</title>
-    <style>
-        body { font-family: -apple-system, sans-serif; background: #000; color: #fff; padding: 20px; }
-        .btn { width: 100%; padding: 16px; margin: 10px 0; border: none; border-radius: 12px; font-size: 16px; font-weight: bold; cursor: pointer; }
-        .btn-blue { background: #007AFF; color: white; }
-        .btn-green { background: #34C759; color: white; }
-        .btn-red { background: #FF3B30; color: white; }
-        #log { background: #1c1c1e; color: #30D158; padding: 12px; border-radius: 8px; height: 250px; overflow-y: auto; font-family: monospace; font-size: 12px; border: 1px solid #38383a; }
-        .status { margin-bottom: 10px; padding: 10px; border-left: 4px solid #007AFF; background: #2c2c2e; }
-    </style>
-</head>
-<body>
-    <div class="status">设备状态: <span id="devStatus">未连接</span></div>
-    
-    <button class="btn btn-blue" onclick="connect()">1. 连接 LBS 硬件 (订阅 0xFF01)</button>
-    
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-        <button class="btn btn-green" onclick="sendHex('AA550101')">激活 (AA550101)</button>
-        <button class="btn btn-green" onclick="sendHex('01')">激活 (01)</button>
-    </div>
+// 增加多个可能的特征值变量
+let charWrite, charNotify, allWritableChars = [];
 
-    <button class="btn btn-blue" onclick="autoTry()">一键尝试所有激活组合</button>
-    
-    <div id="log">等待操作...日志将在此显示</div>
-
-    <script>
-        let charWrite, charNotify;
-        const log = (msg) => {
-            const div = document.getElementById('log');
-            div.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${msg}</div>`;
-            div.scrollTop = div.scrollHeight;
-        };
-
-        async function connect() {
-            try {
-                log("正在搜索 LBS123456...");
-                const device = await navigator.bluetooth.requestDevice({
-                    filters: [{ namePrefix: 'LBS' }],
-                    optionalServices: ['0000ff00-0000-1000-8000-00805f9b34fb']
-                });
-                
-                const server = await device.gatt.connect();
-                document.getElementById('devStatus').innerText = "已连接: " + device.name;
-                
-                const service = await server.getPrimaryService('0000ff00-0000-1000-8000-00805f9b34fb');
-                charWrite = await service.getCharacteristic('0000ff02-0000-1000-8000-00805f9b34fb');
-                charNotify = await service.getCharacteristic('0000ff01-0000-1000-8000-00805f9b34fb');
-
-                // 开启监听，如果收到数据立刻反馈
+async function connect() {
+    try {
+        log("正在搜索 LBS 硬件...");
+        const device = await navigator.bluetooth.requestDevice({
+            acceptAllDevices: true, 
+            optionalServices: ['0000ff00-0000-1000-8000-00805f9b34fb']
+        });
+        
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService('0000ff00-0000-1000-8000-00805f9b34fb');
+        
+        // 获取该服务下所有的特征值
+        const chars = await service.getCharacteristics();
+        allWritableChars = [];
+        
+        for (let c of chars) {
+            log(`发现特征值: ${c.uuid.slice(4,8)} | 属性: ${Object.keys(c.properties).filter(p => c.properties[p]).join(', ')}`);
+            
+            // 记录所有可以写入的通道
+            if (c.properties.write || c.properties.writeWithoutResponse) {
+                allWritableChars.push(c);
+            }
+            
+            // 默认订阅 FF01 作为数据接收端
+            if (c.uuid.includes('ff01')) {
+                charNotify = c;
                 await charNotify.startNotifications();
                 charNotify.addEventListener('characteristicvaluechanged', (e) => {
-                    let val = new Uint8Array(e.target.value.buffer);
-                    let hex = Array.from(val).map(b => b.toString(16).padStart(2, '0')).join(' ');
+                    let hex = Array.from(new Uint8Array(e.target.value.buffer)).map(b => b.toString(16).padStart(2, '0')).join(' ');
                     log("🔥 收到反馈: " + hex);
-                    if(hex.startsWith('24 47 50')) log("✅ 硬件已激活！NMEA数据注入中...");
                 });
-
-                log("✅ 连接成功且已开启监听。");
-            } catch (err) { log("❌ 出错: " + err); }
-        }
-
-        async function sendHex(hex) {
-            if (!charWrite) return log("请先连接设备");
-            try {
-                let bytes = new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-                await charWrite.writeValue(bytes);
-                log("已发送指令: " + hex);
-            } catch (err) { log("发送失败: " + err); }
-        }
-
-        async function autoTry() {
-            const cmds = ['01', '02', 'AA550101', 'AA550102', '11', '00'];
-            log("开始全自动尝试激活...");
-            for (let cmd of cmds) {
-                await sendHex(cmd);
-                await new Promise(r => setTimeout(r, 1000)); // 每条指令间隔1秒观察反馈
             }
-            log("全自动尝试结束。");
         }
-    </script>
-</body>
-</html>
+        
+        log(`✅ 连接成功！共找到 ${allWritableChars.length} 个可写通道。`);
+        document.getElementById('devStatus').innerText = "已连接: " + device.name;
+    } catch (err) { log("❌ 连接失败: " + err); }
+}
+
+async function autoTry() {
+    if (allWritableChars.length === 0) return log("请先连接并确认有可写通道");
+    
+    // 扩充后的 LBS 指令库
+    const testCmds = ['01', 'AA550101', 'AA550102', '55AA0101', '06010101', '00000001'];
+    
+    log("🚀 开始全通道轰炸激活...");
+    
+    for (let char of allWritableChars) {
+        log(`--- 正在测试通道: ${char.uuid.slice(4,8)} ---`);
+        for (let cmd of testCmds) {
+            try {
+                let bytes = new Uint8Array(cmd.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+                // 强制使用 WNR 模式以避免 出错2
+                await char.writeValueWithoutResponse(bytes);
+                log(`已向 ${char.uuid.slice(4,8)} 发送 ${cmd}`);
+                await new Promise(r => setTimeout(r, 800)); // 稍作停顿观察反馈
+            } catch (e) {
+                log(`通道 ${char.uuid.slice(4,8)} 写入失败: ${e.message}`);
+            }
+        }
+    }
+    log("🏁 全通道测试结束。");
+}
