@@ -1,66 +1,67 @@
-// 增加多个可能的特征值变量
-let charWrite, charNotify, allWritableChars = [];
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LBS GPS Fix</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        button { width: 100%; padding: 15px; margin: 5px 0; background: #222; color: #0f0; border: 1px solid #0f0; border-radius: 8px; font-weight: bold; }
+        #log { border: 1px solid #333; height: 300px; overflow-y: auto; padding: 10px; font-size: 12px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <h3>LBS 激活工具 v3.0</h3>
+    <div id="status">状态: 等待连接...</div>
+    <button onclick="connect()">1. 连接 LBS123456</button>
+    <button onclick="autoTry()">2. 一键轰炸激活</button>
+    <div id="log">--- 日志区域 ---</div>
 
-async function connect() {
-    try {
-        log("正在搜索 LBS 硬件...");
-        const device = await navigator.bluetooth.requestDevice({
-            acceptAllDevices: true, 
-            optionalServices: ['0000ff00-0000-1000-8000-00805f9b34fb']
-        });
-        
-        const server = await device.gatt.connect();
-        const service = await server.getPrimaryService('0000ff00-0000-1000-8000-00805f9b34fb');
-        
-        // 获取该服务下所有的特征值
-        const chars = await service.getCharacteristics();
-        allWritableChars = [];
-        
-        for (let c of chars) {
-            log(`发现特征值: ${c.uuid.slice(4,8)} | 属性: ${Object.keys(c.properties).filter(p => c.properties[p]).join(', ')}`);
+<script>
+    let chars = [];
+    const log = (m) => { document.getElementById('log').innerHTML += `<div>> ${m}</div>`; };
+
+    async function connect() {
+        try {
+            log("开始搜索...");
+            const device = await navigator.bluetooth.requestDevice({
+                acceptAllDevices: true,
+                optionalServices: ['0000ff00-0000-1000-8000-00805f9b34fb']
+            });
+            const server = await device.gatt.connect();
+            const service = await server.getPrimaryService('0000ff00-0000-1000-8000-00805f9b34fb');
+            const allChars = await service.getCharacteristics();
             
-            // 记录所有可以写入的通道
-            if (c.properties.write || c.properties.writeWithoutResponse) {
-                allWritableChars.push(c);
-            }
+            chars = allChars.filter(c => c.properties.write || c.properties.writeWithoutResponse);
             
-            // 默认订阅 FF01 作为数据接收端
-            if (c.uuid.includes('ff01')) {
-                charNotify = c;
-                await charNotify.startNotifications();
-                charNotify.addEventListener('characteristicvaluechanged', (e) => {
-                    let hex = Array.from(new Uint8Array(e.target.value.buffer)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-                    log("🔥 收到反馈: " + hex);
+            // 订阅 FF01
+            const notifyChar = allChars.find(c => c.uuid.includes('ff01'));
+            if (notifyChar) {
+                await notifyChar.startNotifications();
+                notifyChar.addEventListener('characteristicvaluechanged', (e) => {
+                    let hex = Array.from(new Uint8Array(e.target.value.buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
+                    log("收到反馈: " + hex);
                 });
             }
-        }
-        
-        log(`✅ 连接成功！共找到 ${allWritableChars.length} 个可写通道。`);
-        document.getElementById('devStatus').innerText = "已连接: " + device.name;
-    } catch (err) { log("❌ 连接失败: " + err); }
-}
+            document.getElementById('status').innerText = "已连接: " + device.name;
+            log("连接成功，找到可写通道: " + chars.length);
+        } catch (e) { log("错误: " + e); }
+    }
 
-async function autoTry() {
-    if (allWritableChars.length === 0) return log("请先连接并确认有可写通道");
-    
-    // 扩充后的 LBS 指令库
-    const testCmds = ['01', 'AA550101', 'AA550102', '55AA0101', '06010101', '00000001'];
-    
-    log("🚀 开始全通道轰炸激活...");
-    
-    for (let char of allWritableChars) {
-        log(`--- 正在测试通道: ${char.uuid.slice(4,8)} ---`);
-        for (let cmd of testCmds) {
-            try {
-                let bytes = new Uint8Array(cmd.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-                // 强制使用 WNR 模式以避免 出错2
-                await char.writeValueWithoutResponse(bytes);
-                log(`已向 ${char.uuid.slice(4,8)} 发送 ${cmd}`);
-                await new Promise(r => setTimeout(r, 800)); // 稍作停顿观察反馈
-            } catch (e) {
-                log(`通道 ${char.uuid.slice(4,8)} 写入失败: ${e.message}`);
+    async function autoTry() {
+        const cmds = ['01', 'AA550101', 'AA550102', '55AA0101'];
+        for (let c of chars) {
+            for (let cmd of cmds) {
+                try {
+                    let b = new Uint8Array(cmd.match(/.{1,2}/g).map(x => parseInt(x, 16)));
+                    await c.writeValueWithoutResponse(b);
+                    log("发送 " + cmd + " 到 " + c.uuid.slice(4,8));
+                    await new Promise(r => setTimeout(r, 500));
+                } catch (err) {}
             }
         }
+        log("测试完毕，请观察反馈。");
     }
-    log("🏁 全通道测试结束。");
-}
+</script>
+</body>
+</html>
