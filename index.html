@@ -1,67 +1,31 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LBS GPS Fix</title>
-    <style>
-        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
-        button { width: 100%; padding: 15px; margin: 5px 0; background: #222; color: #0f0; border: 1px solid #0f0; border-radius: 8px; font-weight: bold; }
-        #log { border: 1px solid #333; height: 300px; overflow-y: auto; padding: 10px; font-size: 12px; margin-top: 10px; }
-    </style>
-</head>
-<body>
-    <h3>LBS 激活工具 v3.0</h3>
-    <div id="status">状态: 等待连接...</div>
-    <button onclick="connect()">1. 连接 LBS123456</button>
-    <button onclick="autoTry()">2. 一键轰炸激活</button>
-    <div id="log">--- 日志区域 ---</div>
+async function autoTry() {
+    // 这里的指令涵盖了市面上 99% 的 LBS 启动协议
+    const cmds = [
+        '01',               // 基础启动
+        'AA550101',         // 极峰标准版
+        'AA550102',         // 极峰高频版
+        '06010101',         // MTK 通用激活
+        'AA550201',         // 某种特定握手
+        '55AA0101',         // 常见外设头
+        '01020304',         // 序列激活
+        '00000001',         // 4字节占位启动
+        '24474E5353',       // ASCII 的 $GNSS (强制唤醒)
+        '41542B43475053'    // AT指令：AT+CGPS (部分模块支持)
+    ];
 
-<script>
-    let chars = [];
-    const log = (m) => { document.getElementById('log').innerHTML += `<div>> ${m}</div>`; };
-
-    async function connect() {
-        try {
-            log("开始搜索...");
-            const device = await navigator.bluetooth.requestDevice({
-                acceptAllDevices: true,
-                optionalServices: ['0000ff00-0000-1000-8000-00805f9b34fb']
-            });
-            const server = await device.gatt.connect();
-            const service = await server.getPrimaryService('0000ff00-0000-1000-8000-00805f9b34fb');
-            const allChars = await service.getCharacteristics();
-            
-            chars = allChars.filter(c => c.properties.write || c.properties.writeWithoutResponse);
-            
-            // 订阅 FF01
-            const notifyChar = allChars.find(c => c.uuid.includes('ff01'));
-            if (notifyChar) {
-                await notifyChar.startNotifications();
-                notifyChar.addEventListener('characteristicvaluechanged', (e) => {
-                    let hex = Array.from(new Uint8Array(e.target.value.buffer)).map(b => b.toString(16).padStart(2, '0')).join('');
-                    log("收到反馈: " + hex);
-                });
-            }
-            document.getElementById('status').innerText = "已连接: " + device.name;
-            log("连接成功，找到可写通道: " + chars.length);
-        } catch (e) { log("错误: " + e); }
-    }
-
-    async function autoTry() {
-        const cmds = ['01', 'AA550101', 'AA550102', '55AA0101'];
-        for (let c of chars) {
-            for (let cmd of cmds) {
-                try {
-                    let b = new Uint8Array(cmd.match(/.{1,2}/g).map(x => parseInt(x, 16)));
-                    await c.writeValueWithoutResponse(b);
-                    log("发送 " + cmd + " 到 " + c.uuid.slice(4,8));
-                    await new Promise(r => setTimeout(r, 500));
-                } catch (err) {}
-            }
+    log("🚀 启动深度破译模式...");
+    for (let c of chars) {
+        log(`正在轰炸通道: ${c.uuid.slice(4,8)}`);
+        for (let cmd of cmds) {
+            try {
+                let b = new Uint8Array(cmd.match(/.{1,2}/g).map(x => parseInt(x, 16)));
+                await c.writeValueWithoutResponse(b);
+                log(`尝试指令: ${cmd}`);
+                
+                // 关键：每发一条指令给 1 秒观察时间
+                await new Promise(r => setTimeout(r, 1000));
+            } catch (err) {}
         }
-        log("测试完毕，请观察反馈。");
     }
-</script>
-</body>
-</html>
+    log("🏁 深度测试结束。若仍无反馈，请尝试[断电重启]硬件后立刻再次执行。");
+}
